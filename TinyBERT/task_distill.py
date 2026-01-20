@@ -741,6 +741,13 @@ def main():
                         type=float,
                         default=1.)
 
+    # layer mapping strategy configuration
+    parser.add_argument("--layer_map",
+                        type=str,
+                        default="uniform",
+                        choices=["uniform", "top", "bottom"],
+                        help="Teacher-to-student layer mapping strategy for intermediate distillation.")
+
     args = parser.parse_args()
     logger.info('The args: {}'.format(args))
 
@@ -941,10 +948,33 @@ def main():
                 if not args.pred_distill:
                     teacher_layer_num = len(teacher_atts)
                     student_layer_num = len(student_atts)
-                    assert teacher_layer_num % student_layer_num == 0
-                    layers_per_block = int(teacher_layer_num / student_layer_num)
-                    new_teacher_atts = [teacher_atts[i * layers_per_block + layers_per_block - 1]
-                                        for i in range(student_layer_num)]
+
+                    # attention, representation layer mapping with different strategies
+                    # teacher_reps has length teacher_layer_num + 1 (includes embedding at index 0)
+
+
+                    if args.layer_map == "uniform":
+                        assert teacher_layer_num % student_layer_num == 0
+                        layers_per_block = teacher_layer_num // student_layer_num
+                        att_idxs = [i * layers_per_block + (layers_per_block - 1) for i in range(student_layer_num)]
+                        rep_idxs = [i * layers_per_block for i in range(student_layer_num + 1)]
+
+                    elif args.layer_map == "top":
+                        # last M layers
+                        att_idxs = list(range(teacher_layer_num - student_layer_num, teacher_layer_num))
+                        # keep embedding (0), then take the last M layer outputs
+                        # teacher layer outputs correspond to indices 1..teacher_layer_num in teacher_reps
+                        rep_idxs = [0] + list(range((teacher_layer_num - student_layer_num) + 1, teacher_layer_num + 1))
+                    elif args.layer_map == "bottom":
+                        # first M layers
+                        att_idxs = list(range(student_layer_num))
+                        # embedding + first M layer outputs
+                        rep_idxs = list(range(student_layer_num + 1))
+                    else:
+                        raise ValueError("Unknown layer_map: {}".format(args.layer_map))
+
+                    new_teacher_atts = [teacher_atts[i] for i in att_idxs]
+
 
                     for student_att, teacher_att in zip(student_atts, new_teacher_atts):
                         student_att = torch.where(student_att <= -1e2, torch.zeros_like(student_att).to(device),
@@ -955,8 +985,9 @@ def main():
                         tmp_loss = loss_mse(student_att, teacher_att)
                         att_loss += tmp_loss
 
-                    new_teacher_reps = [teacher_reps[i * layers_per_block] for i in range(student_layer_num + 1)]
+                    new_teacher_reps = [teacher_reps[i] for i in rep_idxs]
                     new_student_reps = student_reps
+
                     for student_rep, teacher_rep in zip(new_student_reps, new_teacher_reps):
                         tmp_loss = loss_mse(student_rep, teacher_rep)
                         rep_loss += tmp_loss
