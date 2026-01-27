@@ -42,7 +42,7 @@ from transformer.tokenization import BertTokenizer
 from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
 
-csv.field_size_limit(sys.maxsize)
+csv.field_size_limit(1_000_000)
 
 log_format = '%(asctime)s %(message)s'
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
@@ -135,6 +135,10 @@ class MrpcProcessor(DataProcessor):
     def get_aug_examples(self, data_dir):
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
+
+    def get_test_examples(self, data_dir): 
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
 
     def get_labels(self):
         """See base class."""
@@ -559,7 +563,7 @@ def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
     if task_name == "cola":
         return {"mcc": matthews_corrcoef(labels, preds)}
-    elif task_name == "sst-2":
+    elif task_name == "sst":
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "mrpc":
         return acc_and_f1(preds, labels)
@@ -601,7 +605,7 @@ def result_to_file(result, file_name):
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
-            writer.write("%s = %s\n" % (key, str(result[key])))
+            writer.write("%s, %s\n" % (key, str(result[key])))
 
 
 def do_eval(model, task_name, eval_dataloader,
@@ -877,6 +881,11 @@ def main():
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
+        
+        # Save evaluation results to file
+        eval_output_file = os.path.join(args.student_model, "do_eval_results.csv")
+        result_to_file(result, eval_output_file)
+        logger.info("Evaluation results saved to: %s", eval_output_file)
     else:
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
