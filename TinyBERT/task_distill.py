@@ -41,6 +41,7 @@ from transformer.modeling import TinyBertForSequenceClassification
 from transformer.tokenization import BertTokenizer
 from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
+import torch.nn.utils.prune as prune
 
 csv.field_size_limit(1_000_000)
 
@@ -136,7 +137,7 @@ class MrpcProcessor(DataProcessor):
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "train_aug.tsv")), "aug")
 
-    def get_test_examples(self, data_dir): 
+    def get_test_examples(self, data_dir):
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
 
@@ -650,6 +651,36 @@ def do_eval(model, task_name, eval_dataloader,
     return result
 
 
+def apply_weight_pruning(model, amount=0.1):
+    parameters_to_prune = []
+
+    # Use .modules() to get every single nested layer
+    for module in model.modules():
+        if isinstance(module, torch.nn.Linear):
+            # We target the 'weight' of every Linear layer in the ENTIRE model
+            parameters_to_prune.append((module, 'weight'))
+
+    if parameters_to_prune:
+        prune.global_unstructured(
+            parameters_to_prune,
+            pruning_method=prune.L1Unstructured,
+            amount=amount,
+        )
+
+    # IMPORTANT: Commit the pruning so the zeros are hard-coded into the tensors
+    # for module, name in parameters_to_prune:
+    #     prune.remove(module, name)
+
+
+def get_pruning_mask(model):
+    masks = {}
+    for name, param in model.named_parameters():
+        if 'weight' in name and 'LayerNorm' not in name:
+            # Create a 1 for weights we keep, 0 for weights already pruned
+            masks[name] = (param.data != 0).float()
+    return masks
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir",
@@ -751,6 +782,18 @@ def main():
                         default="uniform",
                         choices=["uniform", "top", "bottom"],
                         help="Teacher-to-student layer mapping strategy for intermediate distillation.")
+
+    # weight pruning
+    parser.add_argument('--prune',
+                        action='store_true',
+                        help='Whether to apply weight pruning before training')
+    parser.add_argument('--prune_amount',
+                        type=float,
+                        default=0.2,
+                        help='Fraction of weights to prune in Linear layers (0.0–1.0)')
+
+    parser.add_argument('--pruning_steps', type=int, default=6,
+                        help='Number of epochs over which to spread the pruning (1 = One-Shot)')
 
     args = parser.parse_args()
     logger.info('The args: {}'.format(args))
@@ -881,7 +924,7 @@ def main():
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
-        
+
         # Save evaluation results to file
         eval_output_file = os.path.join(args.student_model, "do_eval_results.csv")
         result_to_file(result, eval_output_file)
@@ -928,7 +971,18 @@ def main():
         best_dev_acc = 0.0
         output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
 
+        pruning_masks = None
+        step_size = args.prune_amount / args.pruning_steps
         for epoch_ in trange(int(args.num_train_epochs), desc="Epoch"):
+
+            if args.prune and epoch_ < args.pruning_steps:
+                logger.info(
+                    f"--- Pruning Step {epoch_ + 1}/{args.pruning_steps}: Adding {step_size * 100:.2f}% sparsity ---")
+
+                apply_weight_pruning(student_model, amount=step_size)
+                # Refresh the gatekeeper mask
+                pruning_masks = get_pruning_mask(student_model)
+
             tr_loss = 0.
             tr_att_loss = 0.
             tr_rep_loss = 0.
@@ -1022,12 +1076,24 @@ def main():
 
                 loss.backward()
 
+                if args.prune and pruning_masks is not None:
+                    for name, param in student_model.named_parameters():
+                        if name in pruning_masks:
+                            if param.grad is not None:
+                                param.grad.mul_(pruning_masks[name].to(device))
+
                 tr_loss += loss.item()
                 nb_tr_examples += label_ids.size(0)
                 nb_tr_steps += 1
 
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()
+
+                    if args.prune and pruning_masks is not None:
+                        for name, param in student_model.named_parameters():
+                            if name in pruning_masks:
+                                param.data.mul_(pruning_masks[name].to(device))
+
                     optimizer.zero_grad()
                     global_step += 1
 
@@ -1126,6 +1192,21 @@ def main():
                             mox.file.copy_parallel('.', args.data_url)
 
                     student_model.train()
+
+        if args.prune:
+            logger.info("--- Finalizing Pruned Model (Committing Masks) ---")
+            # We handle DataParallel if necessary
+            model_to_commit = student_model.module if hasattr(student_model, 'module') else student_model
+            for module in model_to_commit.modules():
+                if isinstance(module, torch.nn.Linear):
+                    try:
+                        prune.remove(module, 'weight')
+                    except ValueError:
+                        pass  # Layer wasn't pruned
+
+            # Final save of the truly pruned model
+        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
+        torch.save(model_to_commit.state_dict(), output_model_file)
 
 
 if __name__ == "__main__":
