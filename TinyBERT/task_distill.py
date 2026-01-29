@@ -657,7 +657,7 @@ def apply_weight_pruning(model, amount=0.1):
     # Use .modules() to get every single nested layer
     for module in model.modules():
         if isinstance(module, torch.nn.Linear):
-            # We target the 'weight' of every Linear layer in the ENTIRE model
+            # target the 'weight' of every Linear layer in the entire model
             parameters_to_prune.append((module, 'weight'))
 
     if parameters_to_prune:
@@ -1140,13 +1140,34 @@ def main():
 
                         model_to_save = student_model.module if hasattr(student_model, 'module') else student_model
 
+                        state_dict = model_to_save.state_dict()
+
+                        if args.prune:
+                            logger.info("Cleaning state_dict: Merging masks into weights for storage...")
+                            clean_state_dict = {}
+                            for key, value in state_dict.items():
+                                # If we find a 'weight_orig', we multiply it by its mask
+                                if key.endswith('_orig'):
+                                    base_key = key[:-5]  # remove '_orig'
+                                    mask_key = base_key + '_mask'
+                                    if mask_key in state_dict:
+                                        # Merge: Weight = Orig * Mask
+                                        clean_state_dict[base_key] = value * state_dict[mask_key]
+                                # Skip saving the raw mask and orig tensors separately
+                                elif key.endswith('_mask'):
+                                    continue
+                                else:
+                                    # Save all other params (biases, layer norms, etc) normally
+                                    clean_state_dict[key] = value
+                            state_dict = clean_state_dict
+
                         model_name = WEIGHTS_NAME
                         # if not args.pred_distill:
                         #     model_name = "step_{}_{}".format(global_step, WEIGHTS_NAME)
                         output_model_file = os.path.join(args.output_dir, model_name)
                         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
 
-                        torch.save(model_to_save.state_dict(), output_model_file)
+                        torch.save(state_dict, output_model_file)
                         model_to_save.config.to_json_file(output_config_file)
                         tokenizer.save_vocabulary(args.output_dir)
 
@@ -1188,21 +1209,6 @@ def main():
                             mox.file.copy_parallel('.', args.data_url)
 
                     student_model.train()
-
-        if args.prune:
-            logger.info("--- Finalizing Pruned Model (Committing Masks) ---")
-            # We handle DataParallel if necessary
-            model_to_commit = student_model.module if hasattr(student_model, 'module') else student_model
-            for module in model_to_commit.modules():
-                if isinstance(module, torch.nn.Linear):
-                    try:
-                        prune.remove(module, 'weight')
-                    except ValueError:
-                        pass  # Layer wasn't pruned
-
-            # Final save of the truly pruned model
-        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
-        torch.save(model_to_commit.state_dict(), output_model_file)
 
 
 if __name__ == "__main__":
