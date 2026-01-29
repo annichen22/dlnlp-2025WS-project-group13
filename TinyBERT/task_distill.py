@@ -667,10 +667,6 @@ def apply_weight_pruning(model, amount=0.1):
             amount=amount,
         )
 
-    # IMPORTANT: Commit the pruning so the zeros are hard-coded into the tensors
-    # for module, name in parameters_to_prune:
-    #     prune.remove(module, name)
-
 
 def get_pruning_mask(model):
     masks = {}
