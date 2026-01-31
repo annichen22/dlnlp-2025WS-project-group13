@@ -5,7 +5,6 @@ glue_data/
 TinyBERT/COLA/*
 !TinyBERT/COLA/results.csv
 !TinyBERT/COLA/results.json
-TinyBERT/MRPC/*
 !TinyBERT/MRPC/results.csv
 !TinyBERT/MRPC/results.json
 TinyBERT/RTE/*
@@ -15,6 +14,15 @@ TinyBERT/SST/*
 !TinyBERT/SST/results.csv
 !TinyBERT/SST/results.json
 !TinyBERT/MRPC/pruned_results.csv
+!TinyBERT/MRPC/temp_ts_tinybert_aug/eval_results.txt
+!TinyBERT/MRPC/temp_ts_tinybert_bottom/eval_results.txt
+!TinyBERT/MRPC/temp_ts_tinybert_bottom_pruned/eval_results.txt
+!TinyBERT/MRPC/temp_ts_tinybert_top/eval_results.txt
+!TinyBERT/MRPC/temp_ts_tinybert_top_pruned/eval_results.txt
+!TinyBERT/MRPC/temp_ts_tinybert_uniform/eval_results.txt
+!TinyBERT/MRPC/temp_ts_tinybert_uniform_pruned/eval_results.txt
+*.bin
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
